@@ -51,6 +51,8 @@ fi
 
 npx esbuild auth-svc-src/index.ts \
     --bundle --platform=node --target=node22 --minify \
+    --alias:@noble/curves/secp256k1=@noble/curves/secp256k1.js \
+    --alias:@noble/hashes/blake2b=@noble/hashes/blake2b.js \
     --outfile=auth-svc.js
 
 # 3. Create package directory structure

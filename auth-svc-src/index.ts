@@ -19,17 +19,19 @@
  *   P10: Auth boundary — validate every input, trust nothing from the network.
  *   E7: Long-running daemon — must not crash, must not leak.
  *
- * Signature validation:
- *   Structural checks only (compressed pubkey format, proof length).
- *   Full Schnorr verification would require sigma-rust's Fiat-Shamir hash,
- *   which is not available in JS. Session ID (128-bit) + OTP binding
- *   prevents forgery — an attacker cannot write a .sig without both.
+ * Cryptographic verification:
+ *   Schnorr proveDlog proof verified using secp256k1 point arithmetic.
+ *   Proof format (per sigma protocol): challenge (24 bytes) || response (32 bytes).
+ *   Message format (per EIP-0044): 0x00 || network_byte || blake2b256(message_utf8).
+ *   This is a safety check — the PAM plugin independently derives the address.
  */
 
 import * as https from "node:https";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { timingSafeEqual } from "node:crypto";
+import { secp256k1 } from "@noble/curves/secp256k1";
+import { blake2b } from "@noble/hashes/blake2b";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -203,6 +205,103 @@ function readSession(sessionId: string): SessionData | null {
   }
 }
 
+// ── Schnorr Verification (proveDlog) ──────────────────────────────────
+
+const CHALLENGE_BYTES = 24;
+const RESPONSE_BYTES = 32;
+const PROOF_BYTES = CHALLENGE_BYTES + RESPONSE_BYTES; // 56 bytes = 112 hex
+
+// EIP-0044 network type bytes
+const MAINNET_PREFIX = new Uint8Array([0x00, 0x00]); // invalidator + mainnet
+const TESTNET_PREFIX = new Uint8Array([0x00, 0x10]); // invalidator + testnet
+
+function bytesToBigInt(bytes: Uint8Array): bigint {
+  let n = 0n;
+  for (const b of bytes) n = (n << 8n) | BigInt(b);
+  return n;
+}
+
+/**
+ * Verify an Ergo Schnorr proveDlog proof.
+ *
+ * Proof format (sigma protocol): challenge (24 bytes) || response z (32 bytes).
+ * Message format (EIP-0044): 0x00 || network_byte || blake2b256(message_utf8).
+ *
+ * Verification:
+ *   1. Reconstruct commitment: a = z*G + e*P
+ *   2. Recompute challenge: e' = blake2b256(a_compressed || signedMsg)[0..24]
+ *   3. Check e == e'
+ */
+function verifySchnorrProof(
+  proofHex: string,
+  publicKeyHex: string,
+  message: string,
+): string | null {
+  let proofBytes: Buffer;
+  let pubKeyBytes: Buffer;
+  try {
+    proofBytes = Buffer.from(proofHex, "hex");
+    pubKeyBytes = Buffer.from(publicKeyHex, "hex");
+  } catch {
+    return "invalid hex in proof or public key";
+  }
+
+  if (proofBytes.length !== PROOF_BYTES) {
+    return `proof must be ${PROOF_BYTES} bytes (${PROOF_BYTES * 2} hex), got ${proofBytes.length}`;
+  }
+
+  // Parse proof: challenge (24 bytes) || response z (32 bytes)
+  const challenge = proofBytes.slice(0, CHALLENGE_BYTES);
+  const zBytes = proofBytes.slice(CHALLENGE_BYTES);
+
+  // Construct signed message per EIP-0044
+  const msgUtf8 = Buffer.from(message, "utf8");
+  const msgHash = blake2b(msgUtf8, { dkLen: 32 });
+  // Try mainnet first (Ergo mainnet addresses start with '9')
+  const signedMsg = new Uint8Array([...MAINNET_PREFIX, ...msgHash]);
+
+  // Parse public key as EC point
+  let P: InstanceType<typeof secp256k1.ProjectivePoint>;
+  try {
+    P = secp256k1.ProjectivePoint.fromHex(pubKeyBytes);
+  } catch {
+    return "invalid secp256k1 public key";
+  }
+
+  const z = bytesToBigInt(new Uint8Array(zBytes));
+  const e = bytesToBigInt(new Uint8Array(challenge));
+
+  // Reconstruct commitment: a = z*G + e*P
+  let aPoint: InstanceType<typeof secp256k1.ProjectivePoint>;
+  try {
+    const G = secp256k1.ProjectivePoint.BASE;
+    aPoint = G.multiply(z).add(P.multiply(e));
+  } catch {
+    return "EC point arithmetic failed";
+  }
+
+  const aCompressed = aPoint.toRawBytes(true); // 33 bytes
+
+  // Recompute challenge: e' = blake2b256(a_compressed || signedMsg)[0..24]
+  const hashInput = new Uint8Array([...aCompressed, ...signedMsg]);
+  const hashResult = blake2b(hashInput, { dkLen: 32 });
+  const ePrime = hashResult.slice(0, CHALLENGE_BYTES);
+
+  // Compare challenges (constant-time)
+  if (!timingSafeEqual(Buffer.from(challenge), Buffer.from(ePrime))) {
+    // Try testnet prefix as fallback
+    const testnetMsg = new Uint8Array([...TESTNET_PREFIX, ...msgHash]);
+    const testnetInput = new Uint8Array([...aCompressed, ...testnetMsg]);
+    const testnetHash = blake2b(testnetInput, { dkLen: 32 });
+    const eTestnet = testnetHash.slice(0, CHALLENGE_BYTES);
+    if (!timingSafeEqual(Buffer.from(challenge), Buffer.from(eTestnet))) {
+      return "Schnorr signature verification failed";
+    }
+  }
+
+  return null; // verification passed
+}
+
 // ── Verification & .sig Write ─────────────────────────────────────────
 
 interface ErgoSigFile {
@@ -228,9 +327,6 @@ function validateAndWriteSig(sessionId: string, payload: CallbackPayload): strin
 
   if (payload.machineId !== session.machine_id) return "machine_id mismatch";
 
-  // Structural validation of the Ergo signature payload
-  // P10: validate every field, trust nothing from the network
-
   // Public key: must be 33 bytes (66 hex chars), compressed secp256k1
   if (payload.key.length !== 66) {
     return `public key must be 33 bytes (66 hex), got ${payload.key.length} hex chars`;
@@ -240,14 +336,10 @@ function validateAndWriteSig(sessionId: string, payload: CallbackPayload): strin
     return `invalid compressed pubkey prefix: ${keyPrefix} (expected 02 or 03)`;
   }
 
-  // Signature: Schnorr proof — at minimum 32 bytes (response scalar)
-  // Typical proveDlog proof: 33 (commitment) + 32 (response) = 65 bytes = 130 hex
-  if (payload.signature.length < 64) {
-    return `signature too short: ${payload.signature.length} hex chars (min 64)`;
-  }
-  if (payload.signature.length > 512) {
-    return `signature too long: ${payload.signature.length} hex chars (max 512)`;
-  }
+  // Verify Schnorr proveDlog proof
+  const message = `Authenticate to ${payload.machineId} with code: ${payload.otp}`;
+  const verifyErr = verifySchnorrProof(payload.signature, payload.key, message);
+  if (verifyErr) return verifyErr;
 
   // Write .sig file (atomic: write tmp, rename)
   const sigContent: ErgoSigFile = {
@@ -267,7 +359,7 @@ function validateAndWriteSig(sessionId: string, payload: CallbackPayload): strin
     return `sig file write failed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  console.log(`[AUTH] Accepted Ergo signature for session ${sessionId}`);
+  console.log(`[AUTH] Verified Schnorr proof for session ${sessionId}`);
   return null;
 }
 
