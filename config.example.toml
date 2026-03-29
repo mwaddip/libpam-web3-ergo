@@ -1,0 +1,12 @@
+# web3-auth-svc (Ergo) configuration
+# Install to: /etc/web3-auth/ergo.toml
+#
+# This file is OPTIONAL. Without it, the auth-svc uses:
+#   port = 22898  (derived: 1024 + crc32("ergo") % 64511)
+#   pending_dir = /run/libpam-web3/pending
+
+[server]
+# Override the derived port if needed
+# port = 22898
+# Directory where PAM session files are written
+# pending_dir = "/run/libpam-web3/pending"

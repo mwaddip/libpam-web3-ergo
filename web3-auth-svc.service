@@ -1,0 +1,15 @@
+[Unit]
+Description=libpam-web3 Auth Service (Ergo)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/web3-auth-svc-ergo
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

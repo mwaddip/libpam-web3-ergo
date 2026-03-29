@@ -1,0 +1,7 @@
+{
+  "runtime": {
+    "@noble/curves": "^1.8.0",
+    "@noble/hashes": "^1.7.0"
+  },
+  "note": "Auth-svc is bundled with esbuild to a single JS file. These are build-time deps."
+}
