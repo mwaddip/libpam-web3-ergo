@@ -61,8 +61,9 @@ fn main() {
             let info = PluginInfoResponse {
                 chain: "ergo",
                 // Matches mainnet P2PK (9...) and testnet P2PK (3...)
-                // Base58 charset: [1-9A-HJ-NP-Za-km-z], P2PK addresses are 51 chars
-                address_pattern: "^[39][1-9A-HJ-NP-Za-km-z]{50}$",
+                // Base58 charset: [1-9A-HJ-NP-Za-km-z], P2PK addresses are 52 chars
+                // (38 bytes: 1 type + 33 pubkey + 4 checksum → 52 Base58 chars)
+                address_pattern: "^[39][1-9A-HJ-NP-Za-km-z]{51}$",
             };
             print!("{}", serde_json::to_string(&info).unwrap());
             process::exit(0);
