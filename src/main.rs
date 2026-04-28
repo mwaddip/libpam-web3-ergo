@@ -7,9 +7,14 @@
 //!
 //! # Protocol
 //!
-//! stdin:  {"sig": {chain, signature, public_key, otp, machine_id}, "otp_message": "...", "wallet_address": "..."}
-//! stdout: Ergo address (Base58)
-//! exit:   0 = verified, 1 = denied
+//! Discovery: install-time manifest at /usr/lib/libpam-web3/plugins/ergo.json,
+//! written by postinst. PAM no longer queries the binary at startup.
+//!
+//! Verify:
+//!   stdin:  {"sig": {chain, signature, public_key, otp, machine_id},
+//!            "otp_message": "...", "wallet_address": "..."}
+//!   stdout: Ergo address (Base58)
+//!   exit:   0 = verified, 1 = denied
 //!
 //! SPECIAL: S8 P10 E7 C5 I8 A8 L7 — authentication boundary
 
@@ -42,12 +47,6 @@ struct ErgoSig {
     machine_id: String,
 }
 
-#[derive(serde::Serialize)]
-struct PluginInfoResponse {
-    chain: &'static str,
-    address_pattern: &'static str,
-}
-
 fn main() {
     let mut input = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut input) {
@@ -55,22 +54,6 @@ fn main() {
         process::exit(1);
     }
 
-    // Info request — plugin discovery
-    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&input) {
-        if obj.get("command").and_then(|v| v.as_str()) == Some("info") {
-            let info = PluginInfoResponse {
-                chain: "ergo",
-                // Matches mainnet P2PK (9...) and testnet P2PK (3...)
-                // Base58 charset: [1-9A-HJ-NP-Za-km-z], P2PK addresses are 52 chars
-                // (38 bytes: 1 type + 33 pubkey + 4 checksum → 52 Base58 chars)
-                address_pattern: "^[39][1-9A-HJ-NP-Za-km-z]{51}$",
-            };
-            print!("{}", serde_json::to_string(&info).unwrap());
-            process::exit(0);
-        }
-    }
-
-    // Verify request
     let parsed: PluginInput = match serde_json::from_str(&input) {
         Ok(p) => p,
         Err(e) => {

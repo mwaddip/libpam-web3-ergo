@@ -69,6 +69,15 @@ mkdir -p "$PKG_DIR/usr/share/doc/${PKG_NAME}"
 # Copy plugin binary
 cp "$PROJECT_DIR/target/x86_64-unknown-linux-gnu/release/ergo" "$PKG_DIR/usr/lib/libpam-web3/plugins/"
 
+# Plugin discovery manifest — PAM reads this at startup instead of forking
+# the binary to ask `info`. Filename stem must equal the `chain` field.
+cat > "$PKG_DIR/usr/lib/libpam-web3/plugins/ergo.json" << 'MANIFEST'
+{
+  "chain": "ergo",
+  "address_pattern": "^[39][1-9A-HJ-NP-Za-km-z]{51}$"
+}
+MANIFEST
+
 # Copy bundled auth-svc
 cp "$PROJECT_DIR/auth-svc.js" "$PKG_DIR/usr/share/blockhost/auth-svc/ergo/"
 
