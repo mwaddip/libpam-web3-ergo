@@ -63,10 +63,7 @@ fn main() {
     };
 
     match verify(&parsed) {
-        Ok(address) => {
-            print!("{}", address);
-            process::exit(0);
-        }
+        Ok(()) => process::exit(0),
         Err(e) => {
             eprintln!("{}", e);
             process::exit(1);
@@ -74,7 +71,7 @@ fn main() {
     }
 }
 
-fn verify(input: &PluginInput) -> Result<String, String> {
+fn verify(input: &PluginInput) -> Result<(), String> {
     if input.sig.public_key.is_empty() {
         return Err("missing public_key".to_string());
     }
@@ -129,11 +126,11 @@ fn verify(input: &PluginInput) -> Result<String, String> {
     // 4. Base58-encode (no check variant — checksum is already appended)
     let derived_address = bs58::encode(&full).into_string();
 
-    // 5. Compare with GECOS wallet address (case-sensitive, exact match)
+    // 5. Compare with GECOS wallet address (case-sensitive, exact match —
+    //    Ergo addresses are Base58 and case-distinguishing).
     if derived_address != input.wallet_address {
         return Err("public key does not match wallet address".to_string());
     }
 
-    // Identity confirmed — return the GECOS wallet address
-    Ok(input.wallet_address.clone())
+    Ok(())
 }
